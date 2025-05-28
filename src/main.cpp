@@ -13,6 +13,10 @@
 #include <map>
 #include <algorithm>
 #include <ctime>
+#include <mutex>
+
+std::mutex file_mutex;
+
 
 #define PORT 8080
 #define BUFFER_SIZE 4096
@@ -68,6 +72,31 @@ void handle_client(int client_socket, std::string client_ip, int client_port) {
     }
 
     if (method == "GET") {
+        if (uri == "/logs") {
+            std::ifstream log_file("post_data.txt");
+            std::ostringstream content;
+            content << "<html><head><title>POST Logs</title></head><body>";
+            content << "<h2>Submitted POST Data</h2><pre>";
+
+            if (log_file.is_open()) {
+                content << log_file.rdbuf();
+                log_file.close();
+            } else {
+                content << "No data available.";
+            }
+
+            content << "</pre></body></html>";
+
+            std::string body = content.str();
+            std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " +
+                                std::to_string(body.size()) + "\r\n\r\n" + body;
+
+            send(client_socket, response.c_str(), response.size(), 0);
+            std::cout << "[Thread " << std::this_thread::get_id() << "] Served /logs route\n";
+            close(client_socket);
+            return;
+        }
+
         if (uri == "/") uri = "/index.html";
         std::string file_path = "public" + uri;
 
@@ -118,21 +147,27 @@ void handle_client(int client_socket, std::string client_ip, int client_port) {
         std::cout << "Preparing to write POST data to file...\n";
 
         std::ofstream outfile("post_data.txt", std::ios::app);
-        if (outfile.is_open()) {
-            std::time_t now = std::time(nullptr);
-            char* dt = std::ctime(&now);
-            dt[strlen(dt) - 1] = '\0';
 
-            outfile << "[" << dt << "] From " << client_ip << ":" << client_port << "\n";
-            outfile << body << "\n\n";
-            outfile.close();
-        } else {
-            std::cerr << "Error: Unable to open post_data.txt for writing\n";
+        {
+            std::lock_guard<std::mutex> lock(file_mutex);  // Automatically unlocks when block ends
+            std::ofstream outfile("post_data.txt", std::ios::app);
+            if (outfile.is_open()) {
+                std::time_t now = std::time(nullptr);
+                char* dt = std::ctime(&now);
+                dt[strlen(dt) - 1] = '\0';
+
+                outfile << "[" << dt << "] From " << client_ip << ":" << client_port << "\n";
+                outfile << body << "\n\n";
+            }
+            else{
+                std::cerr << "Error: Unable to open post_data.txt for writing\n";
+            }
         }
 
-        std::string response_body = "Received POST data:\n" + body;
-        std::string response = "HTTP/1.1 200 OK\r\nContent-Length: " +
-                            std::to_string(response_body.size()) + "\r\n\r\n" + response_body;
+        std::string response = "HTTP/1.1 303 See Other\r\n"
+                       "Location: /logs\r\n"
+                       "Content-Length: 0\r\n\r\n";
+        // Redirect to /logs after successful POST
 
         send(client_socket, response.c_str(), response.size(), 0);
         std::cout << "[Thread " << std::this_thread::get_id()
